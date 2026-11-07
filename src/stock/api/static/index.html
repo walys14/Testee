@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle de Estoque</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='7' y='1' fill='%23136f52'/%3E%3Crect width='16' height='7' y='9' fill='%23b8730a'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ground:    #eceee9;
+    --surface:   #ffffff;
+    --ink:       #14222c;
+    --ink-soft:  #5c6b74;
+    --line:      #d2d7d1;
+    --available: #136f52;
+    --reserved:  #b8730a;
+    --blocked:   #44525c;
+    --danger:    #a32a1f;
+    --radius:    3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px 64px; }
+
+  /* ---------- barra superior ---------- */
+  .topbar {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+    padding: 18px 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 28px;
+  }
+  .topbar h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .topbar .spacer { flex: 1 1 auto; }
+  .topbar a { color: var(--ink-soft); font-size: 13px; text-decoration: none; border-bottom: 1px solid var(--line); }
+  .topbar a:hover { color: var(--ink); border-color: currentColor; }
+
+  /* ---------- seletor de produto ---------- */
+  .picker { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 26px; }
+  .picker .field { flex: 0 1 260px; }
+
+  label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 5px; }
+
+  input {
+    width: 100%; padding: 8px 10px; font: inherit; font-size: 14px;
+    color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  input:focus-visible, button:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: 1px;
+  }
+
+  button {
+    font: inherit; font-size: 14px; padding: 8px 14px; cursor: pointer;
+    color: var(--surface); background: var(--ink);
+    border: 1px solid var(--ink); border-radius: var(--radius);
+  }
+  button:hover { background: #22333f; }
+  button:disabled { opacity: .45; cursor: progress; }
+  button.quiet {
+    color: var(--ink); background: transparent; border-color: var(--line);
+    padding: 5px 10px; font-size: 13px;
+  }
+  button.quiet:hover { background: var(--surface); border-color: var(--ink-soft); }
+
+  /* ---------- herói: o estado do estoque ---------- */
+  .state { background: var(--surface); border: 1px solid var(--line); padding: 22px 24px 20px; }
+
+  .state-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+  .sku { font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
+  .total { font-size: 13px; color: var(--ink-soft); }
+  .total b { font-size: 22px; font-weight: 600; color: var(--ink); margin-left: 6px; }
+
+  .bar {
+    display: flex; height: 46px; margin: 18px 0 0;
+    border: 1px solid var(--line); background:
+      repeating-linear-gradient(45deg, #f6f7f5 0 6px, #eceee9 6px 12px);
+  }
+  .bar span {
+    display: block; transition: width .35s ease;
+    border-right: 1px solid rgba(255,255,255,.35);
+  }
+  .bar .seg-available { background: var(--available); }
+  .bar .seg-reserved  { background: var(--reserved); }
+  .bar .seg-blocked   { background: var(--blocked); }
+  @media (prefers-reduced-motion: reduce) { .bar span { transition: none; } }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 14px; }
+  .legend div { display: flex; align-items: baseline; gap: 8px; }
+  .legend i { width: 10px; height: 10px; flex: none; transform: translateY(-1px); }
+  .legend .n { font-size: 19px; font-weight: 600; }
+  .legend .k { font-size: 13px; color: var(--ink-soft); }
+  .empty-hint { margin-top: 14px; font-size: 13px; color: var(--ink-soft); }
+
+  /* ---------- colunas ---------- */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; align-items: start; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); }
+  .panel > h2 {
+    font-size: 13px; font-weight: 600; color: var(--ink-soft); margin: 0;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+  }
+  .panel > .body { padding: 16px 18px 18px; }
+
+  .op + .op { margin-top: 16px; padding-top: 16px; border-top: 1px dotted var(--line); }
+  .op-row { display: flex; gap: 8px; align-items: flex-end; }
+  .op-row .qty { flex: 0 0 92px; }
+  .op-row .ref { flex: 1 1 auto; }
+  .op-row button { flex: none; }
+
+  /* ---------- lista de holds ---------- */
+  .holds { list-style: none; margin: 0; padding: 0; }
+  .holds li {
+    display: flex; gap: 12px; align-items: center;
+    padding: 10px 0; border-bottom: 1px dotted var(--line);
+  }
+  .holds li:last-child { border-bottom: 0; }
+  .holds .mark { width: 4px; align-self: stretch; flex: none; }
+  .holds .mark.reservation { background: var(--reserved); }
+  .holds .mark.block { background: var(--blocked); }
+  .holds .qt { font-size: 17px; font-weight: 600; min-width: 46px; }
+  .holds .meta { flex: 1 1 auto; min-width: 0; }
+  .holds .meta .ref { font-size: 14px; overflow-wrap: anywhere; }
+  .holds .meta .id { font-size: 11px; color: var(--ink-soft); overflow-wrap: anywhere; }
+
+  .placeholder { color: var(--ink-soft); font-size: 14px; margin: 2px 0; }
+
+  /* ---------- registro ---------- */
+  .log { margin-top: 20px; }
+  .log ol { list-style: none; margin: 0; padding: 0; }
+  .log li { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px dotted var(--line); font-size: 13px; }
+  .log li:last-child { border-bottom: 0; }
+  .log .code { font-weight: 600; flex: none; min-width: 32px; }
+  .log .ok   .code { color: var(--available); }
+  .log .bad  .code { color: var(--danger); }
+  .log .what { flex: 1 1 auto; }
+  .log .detail { color: var(--ink-soft); }
+  .log .time { color: var(--ink-soft); flex: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <h1>Controle de Estoque</h1>
+    <div class="spacer"></div>
+    <a href="/docs">Referência da API</a>
+  </div>
+
+  <form class="picker" id="picker">
+    <div class="field">
+      <label for="product">Produto</label>
+      <input id="product" value="sku-1" autocomplete="off" spellcheck="false">
+    </div>
+    <button type="submit">Abrir</button>
+  </form>
+
+  <section class="state" aria-live="polite">
+    <div class="state-head">
+      <div class="sku" id="sku">—</div>
+      <div class="total">em estoque <b id="total">0</b></div>
+    </div>
+    <div class="bar" id="bar" role="img" aria-label="Distribuição das unidades"></div>
+    <div class="legend">
+      <div><i style="background:var(--available)"></i><span class="n" id="available">0</span><span class="k">disponível</span></div>
+      <div><i style="background:var(--reserved)"></i><span class="n" id="reserved">0</span><span class="k">reservado</span></div>
+      <div><i style="background:var(--blocked)"></i><span class="n" id="blocked">0</span><span class="k">bloqueado</span></div>
+    </div>
+    <p class="empty-hint" id="hint" hidden></p>
+  </section>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>Movimentar</h2>
+      <div class="body">
+        <form class="op" id="form-entry">
+          <label for="qty-entry">Entrada — acrescenta unidades ao estoque</label>
+          <div class="op-row">
+            <div class="qty"><input id="qty-entry" type="number" value="100"></div>
+            <button type="submit">Dar entrada</button>
+          </div>
+        </form>
+
+        <form class="op" id="form-withdraw">
+          <label for="qty-withdraw">Saída — consome unidades disponíveis</label>
+          <div class="op-row">
+            <div class="qty"><input id="qty-withdraw" type="number" value="10"></div>
+            <button type="submit">Dar saída</button>
+          </div>
+        </form>
+
+        <form class="op" id="form-reserve">
+          <label for="qty-reserve">Reserva — separa unidades para uma solicitação</label>
+          <div class="op-row">
+            <div class="qty"><input id="qty-reserve" type="number" value="30"></div>
+            <div class="ref"><input id="ref-reserve" value="pedido-1" aria-label="Solicitação" autocomplete="off"></div>
+            <button type="submit">Reservar</button>
+          </div>
+        </form>
+
+        <form class="op" id="form-block">
+          <label for="qty-block">Bloqueio — torna unidades indisponíveis</label>
+          <div class="op-row">
+            <div class="qty"><input id="qty-block" type="number" value="20"></div>
+            <div class="ref"><input id="ref-block" value="avaria" aria-label="Motivo" autocomplete="off"></div>
+            <button type="submit">Bloquear</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Reservas e bloqueios ativos</h2>
+      <div class="body">
+        <ul class="holds" id="holds"></ul>
+        <p class="placeholder" id="holds-empty">Nada separado. Reserve ou bloqueie unidades para vê-las aqui.</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel log">
+    <h2>Registro de atividade</h2>
+    <div class="body">
+      <ol id="log"></ol>
+      <p class="placeholder" id="log-empty">As chamadas feitas por esta tela aparecem aqui, com o código HTTP de cada uma.</p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const state = { product: "sku-1" };
+
+  // ---------- chamada à API ---------------------------------------------
+  async function call(method, path, body, label) {
+    let response, payload;
+    try {
+      response = await fetch(path, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      log(null, label, "Sem resposta do servidor. A aplicação está no ar?");
+      return null;
+    }
+    try { payload = await response.json(); } catch { payload = null; }
+
+    if (response.ok) {
+      log(response.status, label, null);
+      return payload;
+    }
+    log(response.status, label, explain(payload));
+    return null;
+  }
+
+  // Transforma o envelope de erro da API em uma frase útil.
+  function explain(payload) {
+    const err = payload && payload.error;
+    if (!err) return "Resposta inesperada.";
+    const d = err.details || {};
+    if (err.code === "insufficient_stock") {
+      return `Pedido de ${d.requested}, mas há ${d.available} disponível(is).`;
+    }
+    if (err.code === "invalid_request" && Array.isArray(d.errors) && d.errors.length) {
+      return d.errors.map((e) => `${e.field}: ${e.message}`).join("; ");
+    }
+    return err.message || err.code;
+  }
+
+  // ---------- registro de atividade -------------------------------------
+  function log(status, label, detail) {
+    const li = document.createElement("li");
+    li.className = status && status < 400 ? "ok" : "bad";
+
+    const code = document.createElement("span");
+    code.className = "code";
+    code.textContent = status === null ? "—" : status;
+
+    const what = document.createElement("span");
+    what.className = "what";
+    what.textContent = label;
+    if (detail) {
+      const d = document.createElement("div");
+      d.className = "detail";
+      d.textContent = detail;
+      what.appendChild(d);
+    }
+
+    const time = document.createElement("span");
+    time.className = "time";
+    time.textContent = new Date().toLocaleTimeString("pt-BR");
+
+    li.append(code, what, time);
+    $("log").prepend(li);
+    $("log-empty").hidden = true;
+    while ($("log").children.length > 40) $("log").lastElementChild.remove();
+  }
+
+  // ---------- desenho do estado -----------------------------------------
+  function paint(stock) {
+    $("sku").textContent = stock ? stock.product_id : "—";
+    for (const key of ["total", "available", "reserved", "blocked"]) {
+      $(key).textContent = stock ? stock[key] : 0;
+    }
+
+    const bar = $("bar");
+    bar.textContent = "";
+    const total = stock ? stock.total : 0;
+    if (total > 0) {
+      for (const [key, cls] of [["available", "seg-available"], ["reserved", "seg-reserved"], ["blocked", "seg-blocked"]]) {
+        if (stock[key] <= 0) continue;
+        const seg = document.createElement("span");
+        seg.className = cls;
+        seg.style.width = (stock[key] / total * 100) + "%";
+        seg.title = `${stock[key]} ${key}`;
+        bar.appendChild(seg);
+      }
+      bar.setAttribute("aria-label",
+        `${stock.available} disponíveis, ${stock.reserved} reservadas, ${stock.blocked} bloqueadas de ${total}`);
+    } else {
+      bar.setAttribute("aria-label", "Sem unidades em estoque");
+    }
+
+    const hint = $("hint");
+    if (!stock) {
+      hint.hidden = false;
+      hint.textContent = `O produto "${state.product}" ainda não existe. A primeira entrada o cria.`;
+    } else if (stock.total === 0) {
+      hint.hidden = false;
+      hint.textContent = "Estoque zerado.";
+    } else {
+      hint.hidden = true;
+    }
+  }
+
+  function paintHolds(holds) {
+    const list = $("holds");
+    list.textContent = "";
+    $("holds-empty").hidden = holds.length > 0;
+
+    for (const hold of holds) {
+      const li = document.createElement("li");
+
+      const mark = document.createElement("span");
+      mark.className = "mark " + hold.kind;
+
+      const qt = document.createElement("span");
+      qt.className = "qt";
+      qt.textContent = hold.quantity;
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const ref = document.createElement("div");
+      ref.className = "ref";
+      ref.textContent = hold.kind === "reservation"
+        ? `Reserva · ${hold.reference}`
+        : `Bloqueio${hold.reference ? " · " + hold.reference : ""}`;
+      const id = document.createElement("div");
+      id.className = "id";
+      id.textContent = hold.id;
+      meta.append(ref, id);
+
+      const btn = document.createElement("button");
+      btn.className = "quiet";
+      btn.type = "button";
+      btn.textContent = "Liberar";
+      btn.addEventListener("click", () => release(hold));
+
+      li.append(mark, qt, meta, btn);
+      list.appendChild(li);
+    }
+  }
+
+  // ---------- operações --------------------------------------------------
+  async function refresh() {
+    const p = encodeURIComponent(state.product);
+    const stock = await call("GET", `/products/${p}`, null, `Consultar ${state.product}`);
+    paint(stock);
+    paintHolds(stock ? (await call("GET", `/products/${p}/holds`, null, "Listar reservas e bloqueios")) || [] : []);
+  }
+
+  function quantity(id) {
+    const value = Number($(id).value);
+    return Number.isInteger(value) ? value : $(id).value;
+  }
+
+  async function operate(label, path, body) {
+    const buttons = document.querySelectorAll("button");
+    buttons.forEach((b) => (b.disabled = true));
+    try {
+      await call("POST", `/products/${encodeURIComponent(state.product)}${path}`, body, label);
+      await refresh();
+    } finally {
+      buttons.forEach((b) => (b.disabled = false));
+    }
+  }
+
+  async function release(hold) {
+    const route = hold.kind === "reservation" ? "reservations" : "blocks";
+    const name = hold.kind === "reservation" ? "reserva" : "bloqueio";
+    await call("POST", `/${route}/${encodeURIComponent(hold.id)}/release`, null, `Liberar ${name} de ${hold.quantity}`);
+    await refresh();
+  }
+
+  // ---------- ligação com o formulário -----------------------------------
+  const on = (id, handler) => $(id).addEventListener("submit", (e) => { e.preventDefault(); handler(); });
+
+  on("picker", () => {
+    state.product = $("product").value.trim();
+    refresh();
+  });
+
+  on("form-entry", () => operate(
+    `Entrada de ${quantity("qty-entry")}`, "/entries", { quantity: quantity("qty-entry") }));
+
+  on("form-withdraw", () => operate(
+    `Saída de ${quantity("qty-withdraw")}`, "/withdrawals", { quantity: quantity("qty-withdraw") }));
+
+  on("form-reserve", () => operate(
+    `Reservar ${quantity("qty-reserve")}`, "/reservations",
+    { quantity: quantity("qty-reserve"), request_id: $("ref-reserve").value }));
+
+  on("form-block", () => operate(
+    `Bloquear ${quantity("qty-block")}`, "/blocks",
+    { quantity: quantity("qty-block"), reason: $("ref-block").value || null }));
+
+  refresh();
+})();
+</script>
+</body>
+</html>

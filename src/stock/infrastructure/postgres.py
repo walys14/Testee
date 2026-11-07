@@ -241,8 +241,21 @@ class _Holds:
 
     def get(self, hold_id: str) -> Hold | None:
         row = self._uow._execute(f"SELECT {self._COLUMNS} FROM holds WHERE id = %s", (hold_id,)).fetchone()
-        if row is None:
-            return None
+        return None if row is None else self._to_hold(row)
+
+    def list_by_product(self, product_id: str, *, only_active: bool) -> list[Hold]:
+        # Usa o índice (product_id, status); limite defensivo para não devolver
+        # uma lista ilimitada a um produto com muitos holds.
+        sql = f"SELECT {self._COLUMNS} FROM holds WHERE product_id = %s"
+        params: tuple = (product_id,)
+        if only_active:
+            sql += " AND status = 'active'"
+        sql += " ORDER BY created_at DESC, id DESC LIMIT 200"
+        rows = self._uow._execute(sql, params).fetchall()
+        return [self._to_hold(row) for row in rows]
+
+    @staticmethod
+    def _to_hold(row: tuple) -> Hold:
         id_, product_id, kind, quantity, reference, status, created_at, released_at = row
         return Hold(id_, product_id, HoldKind(kind), quantity, reference, HoldStatus(status), created_at, released_at)
 

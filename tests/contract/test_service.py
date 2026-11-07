@@ -70,6 +70,33 @@ def test_holds_are_queryable_by_id_with_their_data(service):
     assert got_r.created_at.tzinfo is not None
 
 
+def test_list_holds_returns_active_ones_and_omits_released(service):
+    service.add_stock("sku", 100)
+    service.add_stock("outro", 50)
+    r = service.reserve("sku", 10, "order-1")
+    b = service.block("sku", 5, "avaria")
+    gone = service.reserve("sku", 7, "order-2")
+    service.reserve("outro", 1, "order-3")  # produto diferente: não pode aparecer
+    service.release_reservation(gone.id)
+
+    active = service.list_holds("sku")
+    assert {h.id for h in active} == {r.id, b.id}
+    assert all(h.status is HoldStatus.ACTIVE and h.product_id == "sku" for h in active)
+
+    todos = service.list_holds("sku", only_active=False)
+    assert {h.id for h in todos} == {r.id, b.id, gone.id}
+
+
+def test_list_holds_is_empty_for_a_product_without_holds(service):
+    service.add_stock("sku", 10)
+    assert service.list_holds("sku") == []
+
+
+def test_list_holds_of_unknown_product_is_not_found(service):
+    with pytest.raises(ProductNotFoundError):
+        service.list_holds("ghost")
+
+
 def test_many_reservations_for_different_requests_are_independent(service):
     service.add_stock("sku", 100)
     r1 = service.reserve("sku", 10, "order-1")

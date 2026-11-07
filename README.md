@@ -14,15 +14,16 @@ Python 3.11+ · FastAPI · PostgreSQL (lock pessimista de linha) · pytest · Do
 4. [Concorrência: o problema e a solução](#4-concorrência-o-problema-e-a-solução)
 5. [Tratamento de erros e resiliência](#5-tratamento-de-erros-e-resiliência)
 6. [API HTTP](#6-api-http)
-7. [Testes](#7-testes)
-8. [Docker](#8-docker)
-9. [Decisões técnicas e trade-offs](#9-decisões-técnicas-e-trade-offs)
-10. [Premissas assumidas](#10-premissas-assumidas)
-11. [Premissas de volumetria e capacidade](#11-premissas-de-volumetria-e-capacidade)
-12. [Limitações conhecidas](#12-limitações-conhecidas)
-13. [Os 5 aspectos mais importantes para produção](#13-os-5-aspectos-mais-importantes-para-produção)
-14. [O que eu faria diferente em produção real](#14-o-que-eu-faria-diferente-em-produção-real)
-15. [Uso de IA](#15-uso-de-ia)
+7. [Console de operação](#7-console-de-operação)
+8. [Testes](#8-testes)
+9. [Docker](#9-docker)
+10. [Decisões técnicas e trade-offs](#10-decisões-técnicas-e-trade-offs)
+11. [Premissas assumidas](#11-premissas-assumidas)
+12. [Premissas de volumetria e capacidade](#12-premissas-de-volumetria-e-capacidade)
+13. [Limitações conhecidas](#13-limitações-conhecidas)
+14. [Os 5 aspectos mais importantes para produção](#14-os-5-aspectos-mais-importantes-para-produção)
+15. [O que eu faria diferente em produção real](#15-o-que-eu-faria-diferente-em-produção-real)
+16. [Uso de IA](#16-uso-de-ia)
 
 ---
 
@@ -34,7 +35,7 @@ Python 3.11+ · FastAPI · PostgreSQL (lock pessimista de linha) · pytest · Do
 docker compose up --build            # sobe PostgreSQL + API em http://localhost:8000
 ```
 
-Documentação interativa da API: <http://localhost:8000/docs> · Health check: <http://localhost:8000/health>
+Abra <http://localhost:8000> — o **console de operação**, uma tela para movimentar o estoque e ver o efeito de cada operação. A referência da API fica em <http://localhost:8000/docs> e o health check em <http://localhost:8000/health>.
 
 ```bash
 # Suíte de testes completa (unitários + contrato + API + integração com PostgreSQL)
@@ -44,7 +45,7 @@ docker compose --profile test run --rm --build tests
 docker compose down -v
 ```
 
-### Teste de fumaça (copie e cole)
+### Teste de fumaça pela linha de comando
 
 ```bash
 curl -X POST localhost:8000/products/sku-1/entries      -H 'content-type: application/json' -d '{"quantity": 100}'
@@ -318,22 +319,61 @@ Erros do driver são traduzidos para o vocabulário do domínio na fronteira da 
 | `POST` | `/reservations/{id}/release` | Liberar reserva | 200 | 404, 409, 503 |
 | `POST` | `/blocks/{id}/release` | Liberar bloqueio | 200 | 404, 409, 503 |
 | `GET` | `/products/{id}` | Consultar estoque | 200 | 404 |
+| `GET` | `/products/{id}/holds` | Listar reservas e bloqueios (`?only_active=false` inclui os liberados) | 200 | 404 |
 | `GET` | `/reservations/{id}` · `/blocks/{id}` | Consultar hold | 200 | 404 |
+| `GET` | `/` | Console de operação (HTML) | 200 | — |
 | `GET` | `/health` | Liveness | 200 | — |
 
 Reservas e bloqueios têm **rotas de liberação distintas** em vez de um `/holds/{id}/release` genérico: o tipo é verificado, de modo que um id de reserva não pode liberar um bloqueio por engano. Holds liberados **não são apagados** — mudam para `status: released` com `released_at`. Isso preserva auditoria e distingue "nunca existiu" (404) de "já foi liberado" (409).
 
 Os endpoints são funções **síncronas** (`def`, não `async def`): o FastAPI as executa num threadpool limitado, o que combina com o driver síncrono do PostgreSQL e naturalmente limita o número de operações em voo.
 
+A listagem de holds é uma leitura **sem lock**, servida pelo índice `(product_id, status)`, com `LIMIT 200` — um teto defensivo para que um produto com muitas reservas não devolva uma resposta ilimitada.
+
 ---
 
-## 7. Testes
+## 7. Console de operação
 
-**155 testes.** Executados contra PostgreSQL 16 real nesta entrega:
+A raiz (<http://localhost:8000>) serve uma tela para operar o estoque sem precisar montar JSON à mão. O Swagger em `/docs` é a referência da API; o console é a forma de **ver as regras funcionando**.
 
 ```
-155 passed in 16.68s                        # com DATABASE_URL (memória + PostgreSQL)
-124 passed, 31 skipped in 4.26s             # sem DATABASE_URL (integração pulada, não falha)
+┌──────────────────────────────────────────────────────────────┐
+│ Controle de Estoque                        Referência da API │
+│ Produto [ sku-1        ] (Abrir)                             │
+├──────────────────────────────────────────────────────────────┤
+│  sku-1                                      em estoque  100  │
+│  ███████████████████████▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒                    │
+│  ■ 50 disponível   ■ 30 reservado   ■ 20 bloqueado           │
+├───────────────────────────┬──────────────────────────────────┤
+│ Movimentar                │ Reservas e bloqueios ativos      │
+│  entrada · saída          │   30  Reserva · pedido-1 [Liberar]│
+│  reserva · bloqueio       │   20  Bloqueio · avaria  [Liberar]│
+├───────────────────────────┴──────────────────────────────────┤
+│ Registro de atividade                                        │
+│  409  Saída de 90 — Pedido de 90, mas há 50 disponível(is).  │
+│  200  Reservar 30                                            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Três decisões de desenho, e o motivo de cada uma:
+
+**A barra segmentada é o elemento principal.** A pergunta central do domínio é "onde estão as unidades agora?", e ela se responde melhor por proporção do que por quatro números soltos. A barra se redesenha a cada operação, então reservar 30 de 100 é algo que se *vê* acontecer. Com estoque zerado ela aparece hachurada, em vez de sumir.
+
+**O registro de atividade mostra o código HTTP de cada chamada.** A tela não esconde a API: expõe o status e traduz o envelope de erro em uma frase direta — um 409 vira "Pedido de 90, mas há 50 disponível(is)", usando o campo `details.available` da resposta. Para quem avalia o case, é a forma mais rápida de confirmar que as regras de consistência estão ativas; para quem opera, é a diferença entre "deu erro" e saber o que fazer.
+
+**Liberar é um botão ao lado do hold, não um campo de id.** Por isso existe o `GET /products/{id}/holds`: sem ele seria preciso anotar manualmente o identificador devolvido na criação — exatamente o atrito que torna o Swagger ruim como interface de uso.
+
+A página é um **único arquivo HTML sem build e sem CDN** (`src/stock/api/static/index.html`), com CSS e JavaScript embutidos. Isso é deliberado: funciona dentro do contêiner sem acesso à internet, não acrescenta nenhuma dependência ao projeto e não cria um segundo processo para subir. Há teste garantindo que a página é servida e que nada nela vem de fora.
+
+---
+
+## 8. Testes
+
+**163 testes.** Executados contra PostgreSQL 16 real nesta entrega:
+
+```
+163 passed in 16.05s                        # com DATABASE_URL (memória + PostgreSQL)
+129 passed, 34 skipped in 4.28s             # sem DATABASE_URL (integração pulada, não falha)
 ```
 
 | Suíte | O que cobre |
@@ -341,7 +381,7 @@ Os endpoints são funções **síncronas** (`def`, não `async def`): o FastAPI 
 | `tests/unit/` | Agregado `Product` puro: caminho feliz, limites, entradas inválidas, invariantes |
 | `tests/contract/test_service.py` | Casos de uso **contra os dois backends** |
 | `tests/contract/test_concurrency.py` | Corridas reais com 32 threads **contra os dois backends** |
-| `tests/api/` | Status HTTP, envelope de erro, falhas transitórias |
+| `tests/api/` | Status HTTP, envelope de erro, falhas transitórias, console servido na raiz |
 | `tests/integration/` | Constraints do PostgreSQL, tradução de erros, reconciliação em SQL |
 
 ### A estratégia, em três ideias
@@ -373,7 +413,7 @@ Outras garantias cobertas: rollback de produto **e** hold quando uma exceção s
 
 ---
 
-## 8. Docker
+## 9. Docker
 
 **`Dockerfile`** — multi-stage com quatro estágios (`builder`, `runtime`, `test`, `release`):
 
@@ -386,11 +426,11 @@ Outras garantias cobertas: rollback de produto **e** hold quando uma exceção s
 
 **`docker-compose.yml`** — PostgreSQL com healthcheck + API, que só inicia quando o banco está pronto (`condition: service_healthy`). A API sobe com **`WEB_CONCURRENCY: 2`**, deliberadamente: dois processos independentes demonstram que a consistência vem do banco, não de um lock em memória de um único processo. O serviço `tests` fica atrás de um `profile`, para não subir junto com a aplicação.
 
-> `docker compose config` foi validado nesta entrega. O build da imagem **não** pôde ser executado no ambiente em que preparei o case (não havia daemon Docker disponível), então o `Dockerfile` está revisado mas não executado — é a verificação pendente mais óbvia antes de confiar nele em CI.
+> Verificado de ponta a ponta: `docker compose up --build` constrói a imagem, o PostgreSQL passa no healthcheck, a API sobe com os dois processos uvicorn e responde em `/health`.
 
 ---
 
-## 9. Decisões técnicas e trade-offs
+## 10. Decisões técnicas e trade-offs
 
 | Decisão | Alternativa | Por quê |
 |---|---|---|
@@ -406,18 +446,19 @@ Outras garantias cobertas: rollback de produto **e** hold quando uma exceção s
 | Validação fora do lock | Dentro da seção crítica | Seção crítica mais curta = mais vazão |
 | Endpoints síncronos | `async def` | Driver síncrono; threadpool do FastAPI dá backpressure natural |
 | Relógio e id injetados | `datetime.now()` no domínio | Domínio determinístico; viabiliza o relógio lento dos testes de corrida |
-| Schema criado no startup | Alembic | Pragmatismo no escopo do case; ver [seção 14](#14-o-que-eu-faria-diferente-em-produção-real) |
+| Schema criado no startup | Alembic | Pragmatismo no escopo do case; ver [seção 14](#15-o-que-eu-faria-diferente-em-produção-real) |
 | Dependências pinadas | Versões abertas | Build reproduzível |
+| Console em um HTML sem build | SPA com React/Vite | Zero dependência nova, funciona offline no contêiner, nada a compilar antes de rodar |
 
 ---
 
-## 10. Premissas assumidas
+## 11. Premissas assumidas
 
 1. **A primeira entrada cria o produto.** Não há cadastro separado; `POST /entries` em um id novo cria o produto zerado e credita a quantidade. Demais operações exigem produto existente (404). Em produção, o cadastro viria de um serviço de catálogo.
 2. **Quantidades são inteiros positivos** (unidades discretas), com teto de 1 bilhão por operação — guarda contra entrada acidental absurda e overflow. Peso/volume exigiriam decimal e outra modelagem.
 3. **Saída consome apenas o disponível.** Retirar unidades reservadas ou bloqueadas exigiria liberar antes — decisão de negócio explícita, não um efeito colateral.
 4. **Reserva e bloqueio disputam o mesmo pool de disponíveis.** Não há prioridade entre eles; vence quem chega primeiro.
-5. **Liberar uma reserva devolve ao disponível, não ao cliente.** Confirmar uma venda é `liberar` + `saída` (ou, em evolução, um `confirmar` atômico — ver [seção 14](#14-o-que-eu-faria-diferente-em-produção-real)).
+5. **Liberar uma reserva devolve ao disponível, não ao cliente.** Confirmar uma venda é `liberar` + `saída` (ou, em evolução, um `confirmar` atômico — ver [seção 14](#15-o-que-eu-faria-diferente-em-produção-real)).
 6. **Um único depósito.** Não há dimensão de localização; adicioná-la mudaria a chave do agregado para (produto, depósito).
 7. **Reservas não expiram** automaticamente — não há TTL nem varredura.
 8. **Sem autenticação/autorização**, fora do escopo do case.
@@ -426,7 +467,7 @@ Outras garantias cobertas: rollback de produto **e** hold quando uma exceção s
 
 ---
 
-## 11. Premissas de volumetria e capacidade
+## 12. Premissas de volumetria e capacidade
 
 O enunciado não informa volumetria, então **dimensionei para o pior caso plausível** e deixo as premissas explícitas para serem contestadas:
 
@@ -440,30 +481,30 @@ O enunciado não informa volumetria, então **dimensionei para o pior caso plaus
 | Reservas ativas por produto | até 10⁵ | Por isso holds ficam fora do agregado |
 | Leitura vs. escrita | leitura domina | Consultas não pegam lock; réplica de leitura é evolução natural |
 
-**A cauda longa é o ponto central.** Em estoque real, a carga nunca se distribui por igual: na Black Friday, um punhado de SKUs concentra a maior parte das requisições, enquanto milhares ficam ociosos. Um lock global, ou mesmo por tabela, transformaria 10.000 produtos ociosos em vítimas da contenção de 3 produtos quentes. O lock por linha isola o problema onde ele realmente está. A consequência honesta: **a vazão de um único SKU tem teto** — e esse teto é inerente ao requisito de nunca vender o que não existe. Qualquer solução que ultrapasse esse teto o faz relaxando a garantia (reserva otimista com reconciliação) ou particionando o estoque (ver [seção 14](#14-o-que-eu-faria-diferente-em-produção-real)).
+**A cauda longa é o ponto central.** Em estoque real, a carga nunca se distribui por igual: na Black Friday, um punhado de SKUs concentra a maior parte das requisições, enquanto milhares ficam ociosos. Um lock global, ou mesmo por tabela, transformaria 10.000 produtos ociosos em vítimas da contenção de 3 produtos quentes. O lock por linha isola o problema onde ele realmente está. A consequência honesta: **a vazão de um único SKU tem teto** — e esse teto é inerente ao requisito de nunca vender o que não existe. Qualquer solução que ultrapasse esse teto o faz relaxando a garantia (reserva otimista com reconciliação) ou particionando o estoque (ver [seção 14](#15-o-que-eu-faria-diferente-em-produção-real)).
 
 **Capacidade por processo:** `DB_POOL_MAX` (padrão 10) conexões, uma por operação em voo. Com `WEB_CONCURRENCY=2` são 20 conexões por contêiner — conta a fazer antes de escalar réplicas, porque `max_connections` do PostgreSQL é finito. Acima de ~4 réplicas, entra um pooler (PgBouncer em modo transaction).
 
-**Nada disso é medido** — são estimativas analíticas a partir da estrutura do código. A primeira ação antes de ir a produção é um teste de carga que as confirme ou derrube ([seção 13](#13-os-5-aspectos-mais-importantes-para-produção)).
+**Nada disso é medido** — são estimativas analíticas a partir da estrutura do código. A primeira ação antes de ir a produção é um teste de carga que as confirme ou derrube ([seção 13](#14-os-5-aspectos-mais-importantes-para-produção)).
 
 ---
 
-## 12. Limitações conhecidas
+## 13. Limitações conhecidas
 
 1. **O backend em memória só é correto em um processo.** Com múltiplas réplicas, `threading.Lock` não protege nada. Por isso `STOCK_BACKEND=postgres` é o padrão quando há `DATABASE_URL`, e o compose sobe PostgreSQL. Documentado no próprio módulo.
 2. **Schema criado no startup**, não com migrações versionadas — adequado ao case, inadequado para produção (ver seção 14).
 3. **Operações não são idempotentes.** Um retry de rede após timeout pode criar uma segunda reserva. Mitigação conhecida: chave de idempotência (seção 14).
 4. **Sem expiração de reservas:** uma reserva esquecida imobiliza estoque indefinidamente.
-5. **Sem paginação/listagem** de holds por produto (o índice `(product_id, status)` já existe para suportá-la).
+5. **Listagem de holds sem paginação:** `GET /products/{id}/holds` devolve no máximo 200 registros, sem cursor. Suficiente para operar, insuficiente para um produto com dezenas de milhares de reservas.
 6. **Sem observabilidade estruturada:** há logs, mas não métricas, tracing nem SLO.
-7. **A imagem Docker não foi construída** no ambiente de preparação (sem daemon disponível); o compose foi validado, o build não.
+7. **O console não se atualiza sozinho:** a tela reflete o estado da última ação feita nela; não há *polling* nem WebSocket, então duas abas abertas podem divergir até alguém operar. Também não tem autenticação.
 8. **Volumetria não medida** — estimada analiticamente, sem teste de carga.
 9. **Sem autenticação, rate limiting ou multi-tenancy.**
 10. **Vazão limitada por SKU** sob contenção extrema — limite inerente à garantia de consistência forte.
 
 ---
 
-## 13. Os 5 aspectos mais importantes para produção
+## 14. Os 5 aspectos mais importantes para produção
 
 **1. Consistência verificável sob concorrência.** É o requisito que define este domínio: oversell custa dinheiro, confiança e, muitas vezes, cancelamento manual. A garantia não vale pela intenção, mas pela prova — por isso há lock pessimista por produto, constraints no banco como segunda linha de defesa, e testes de concorrência que falham quando o lock é removido (verificado por mutação). Um sistema cuja correção não pode ser demonstrada é um sistema que ninguém pode alterar com segurança.
 
@@ -473,11 +514,11 @@ O enunciado não informa volumetria, então **dimensionei para o pior caso plaus
 
 **4. Evolução segura: migrações versionadas e compatibilidade entre versões.** Estoque é sistema que não pode parar, então todo deploy convive por minutos com duas versões da aplicação rodando contra o mesmo banco. Migrações versionadas (Alembic) com o padrão **expand → migrate → verify → contract** garantem que versão antiga e nova funcionem simultaneamente, e que exista caminho de volta. Mudança de schema é a classe de alteração com maior potencial destrutivo e menor reversibilidade — e a arquitetura em camadas serve a esse mesmo objetivo: com a regra isolada do SQL e do HTTP, trocar persistência ou adicionar uma regra não exige reescrever o resto.
 
-**5. Capacidade comprovada por medição, com degradação previsível.** As premissas da [seção 11](#11-premissas-de-volumetria-e-capacidade) são estimativas, não fatos. Um teste de carga com **distribuição realista** (hot SKUs concentrando a carga, não acesso uniforme — que esconde exatamente o gargalo que importa) estabelece a linha de base e mostra onde o sistema quebra. Igualmente importante é **como** ele quebra: os timeouts e o pool limitado garantem que a saturação vire 503 rápido e localizado, em vez de fila crescente e colapso global. Um sistema que degrada de forma previsível pode ser operado; um que colapsa em cascata, não.
+**5. Capacidade comprovada por medição, com degradação previsível.** As premissas da [seção 11](#12-premissas-de-volumetria-e-capacidade) são estimativas, não fatos. Um teste de carga com **distribuição realista** (hot SKUs concentrando a carga, não acesso uniforme — que esconde exatamente o gargalo que importa) estabelece a linha de base e mostra onde o sistema quebra. Igualmente importante é **como** ele quebra: os timeouts e o pool limitado garantem que a saturação vire 503 rápido e localizado, em vez de fila crescente e colapso global. Um sistema que degrada de forma previsível pode ser operado; um que colapsa em cascata, não.
 
 ---
 
-## 14. O que eu faria diferente em produção real
+## 15. O que eu faria diferente em produção real
 
 **Antes do primeiro deploy**
 
@@ -505,6 +546,6 @@ O enunciado não informa volumetria, então **dimensionei para o pior caso plaus
 
 ---
 
-## 15. Uso de IA
+## 16. Uso de IA
 
 A documentação de uso de IA está em **[`docs/USO_DE_IA.md`](docs/USO_DE_IA.md)**: os principais prompts, onde a IA mais ajudou, o que eu rejeitei das sugestões dela e os erros que ela cometeu — incluindo um teste que passava mesmo com o código errado, encontrado por um experimento de mutação.

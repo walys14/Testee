@@ -38,6 +38,9 @@ class HoldRepository(Protocol):
 
     def get(self, hold_id: str) -> Hold | None: ...
 
+    def list_by_product(self, product_id: str, *, only_active: bool) -> list[Hold]:
+        """Lista os holds de um produto, mais recentes primeiro (leitura sem lock)."""
+
     def save(self, hold: Hold) -> None:
         """Insere ou atualiza (status/released_at). Exige o lock do produto dono."""
 

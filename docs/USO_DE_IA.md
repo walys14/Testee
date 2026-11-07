@@ -38,7 +38,15 @@ A exigência de "contabilidade exata" é o que separa um teste de concorrência 
 
 **Resultado na primeira execução: 9 falharam, 3 passaram.** Entre os que passaram estava justamente o teste de liberação dupla — ou seja, ele teria aprovado um código com bug. A análise do motivo gerou a correção descrita na seção 3.
 
-### 1.6 Revisão adversarial
+### 1.6 Console de operação
+
+> O Swagger não serve como interface de uso: para liberar uma reserva eu preciso anotar o id à mão. Projete uma tela de operação servida pela própria aplicação, sem build e sem CDN, que funcione dentro do contêiner offline. Me diga antes qual é o elemento principal da tela e por quê, em vez de já sair gerando HTML.
+
+A resposta propôs a barra segmentada (disponível/reservado/bloqueado em proporção) como elemento central, com o argumento de que a pergunta do domínio é "onde estão as unidades agora" — melhor respondida por proporção que por quatro números soltos. Aceitei. Também veio a ideia de registrar o código HTTP de cada chamada numa área de atividade, o que acabou sendo a parte mais útil: transforma as regras de consistência em algo visível.
+
+Essa tela exigiu um endpoint novo (`GET /products/{id}/holds`), porque sem listar os holds não há como oferecer um botão "Liberar". Isso fechou uma limitação que eu mesmo havia documentado no README.
+
+### 1.7 Revisão adversarial
 
 > Releia o backend PostgreSQL procurando por: locks liberados cedo demais, exceções que escapam sem rollback, erros do driver não traduzidos, e qualquer caminho em que a conexão volte ao pool em estado sujo.
 
@@ -82,7 +90,7 @@ Correções: aquecer o pool nos testes (`min_size == max_size`) e injetar um rel
 
 **b) Ordem errada no tratamento de exceções do psycopg.** O código gerado capturava `psycopg.OperationalError` antes de `LockNotAvailable` e `QueryCanceled`. Como estas são subclasses daquela, o primeiro `except` engolia tudo e todo timeout de lock virava "banco indisponível" — erro operacional genérico em vez de contenção, com diagnóstico enganoso em produção. Reordenei: do mais específico para o mais genérico.
 
-**c) `set_config` com escopo de sessão.** Como descrito na seção 1.6: sem o terceiro argumento `true`, `lock_timeout` e `statement_timeout` persistiriam na conexão após ela voltar ao pool, afetando requisições seguintes. Bug silencioso e específico de ambiente com pool.
+**c) `set_config` com escopo de sessão.** Como descrito na seção 1.7: sem o terceiro argumento `true`, `lock_timeout` e `statement_timeout` persistiriam na conexão após ela voltar ao pool, afetando requisições seguintes. Bug silencioso e específico de ambiente com pool.
 
 **d) Teste de integração com transação mal gerenciada.** Um teste inseria uma linha e, no laço seguinte, dava `rollback()` após cada `UPDATE` inválido — desfazendo também o `INSERT` inicial. Falhou com "DID NOT RAISE CheckViolation", o que inicialmente parecia um problema nas constraints do banco, quando o defeito estava no teste. Corrigido com um `commit()` após a inserção.
 

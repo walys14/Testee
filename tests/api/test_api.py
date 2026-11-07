@@ -53,6 +53,29 @@ def test_end_to_end_flow(client):
     assert stock(client) == {"product_id": "sku", "total": 50, "available": 50, "reserved": 0, "blocked": 0}
 
 
+def test_console_page_is_served_at_the_root(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "Controle de Estoque" in r.text
+    # a página é autossuficiente: nada vindo de CDN externo
+    assert "https://" not in r.text.replace("https://127.0.0.1", "")
+
+
+def test_list_holds_endpoint(client):
+    client.post("/products/sku/entries", json={"quantity": 50})
+    rid = client.post("/products/sku/reservations", json={"quantity": 5, "request_id": "o"}).json()["id"]
+    bid = client.post("/products/sku/blocks", json={"quantity": 3}).json()["id"]
+    client.post(f"/reservations/{rid}/release")
+
+    ativos = client.get("/products/sku/holds").json()
+    assert [h["id"] for h in ativos] == [bid]
+
+    todos = client.get("/products/sku/holds", params={"only_active": False}).json()
+    assert {h["id"] for h in todos} == {rid, bid}
+    assert client.get("/products/ghost/holds").status_code == 404
+
+
 def test_insufficient_stock_is_409_with_structured_details(client):
     client.post("/products/sku/entries", json={"quantity": 5})
     r = client.post("/products/sku/reservations", json={"quantity": 6, "request_id": "o"})

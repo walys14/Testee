@@ -120,6 +120,14 @@ class StockService:
             raise ProductNotFoundError(pid)
         return product.snapshot()
 
+    def list_holds(self, product_id: str, *, only_active: bool = True) -> list[Hold]:
+        """Reservas e bloqueios de um produto, mais recentes primeiro."""
+        pid = validate_identifier(product_id, "product_id")
+        with self._uow_factory() as uow:
+            if uow.products.get(pid) is None:
+                raise ProductNotFoundError(pid)
+            return uow.holds.list_by_product(pid, only_active=only_active)
+
     def get_reservation(self, reservation_id: str) -> Hold:
         return self._get_hold(reservation_id, HoldKind.RESERVATION)
 

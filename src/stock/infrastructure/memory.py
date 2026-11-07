@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 
 from stock.domain.exceptions import InvariantViolationError, LockTimeoutError
-from stock.domain.models import Hold, Product
+from stock.domain.models import Hold, HoldStatus, Product
 
 
 class InMemoryBackend:
@@ -133,6 +133,17 @@ class _Holds:
             return pending
         with self._uow._backend._state_lock:
             return self._uow._backend._holds.get(hold_id)
+
+    def list_by_product(self, product_id: str, *, only_active: bool) -> list[Hold]:
+        with self._uow._backend._state_lock:
+            holds = list(self._uow._backend._holds.values())
+        holds.extend(self._uow._pending_holds.values())
+        seen: dict[str, Hold] = {}
+        for hold in holds:  # pendentes sobrescrevem os já persistidos
+            if hold.product_id == product_id:
+                seen[hold.id] = hold
+        selected = [h for h in seen.values() if not only_active or h.status is HoldStatus.ACTIVE]
+        return sorted(selected, key=lambda h: (h.created_at, h.id), reverse=True)
 
     def save(self, hold: Hold) -> None:
         self._uow._require_lock(hold.product_id)

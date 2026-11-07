@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictInt
 
 from stock.application.service import StockService
@@ -32,6 +33,9 @@ from stock.domain.exceptions import (
 from stock.domain.models import Hold, StockSnapshot
 
 logger = logging.getLogger("stock.api")
+
+# Página única, sem build e sem CDN: funciona dentro do contêiner, offline.
+_CONSOLE_HTML = Path(__file__).parent / "static" / "index.html"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,8 +175,13 @@ def create_app(service: StockService | None = None, settings: Settings | None = 
         if backend is not None:
             backend.close()
 
-    app = FastAPI(title="Controle de Estoque", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="Controle de Estoque", version="1.0.0", lifespan=lifespan, docs_url="/docs")
     _install_error_handlers(app)
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def console() -> HTMLResponse:
+        """Console de operação: uma página estática que consome esta mesma API."""
+        return HTMLResponse(_CONSOLE_HTML.read_text(encoding="utf-8"))
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:
@@ -207,6 +216,10 @@ def create_app(service: StockService | None = None, settings: Settings | None = 
     @app.get("/products/{product_id}", response_model=StockOut, tags=["estoque"])
     def get_stock(product_id: str, svc: ServiceDep) -> StockOut:
         return StockOut.from_snapshot(svc.get_stock(product_id))
+
+    @app.get("/products/{product_id}/holds", response_model=list[HoldOut], tags=["estoque"])
+    def list_holds(product_id: str, svc: ServiceDep, only_active: bool = True) -> list[HoldOut]:
+        return [HoldOut.from_hold(h) for h in svc.list_holds(product_id, only_active=only_active)]
 
     @app.get("/reservations/{reservation_id}", response_model=HoldOut, tags=["reservas"])
     def get_reservation(reservation_id: str, svc: ServiceDep) -> HoldOut:
