@@ -1,0 +1,52 @@
+# Subir a aplicação:      docker compose up --build
+# Rodar a suíte de testes: docker compose --profile test run --rm --build tests
+#
+# As credenciais abaixo são APENAS para desenvolvimento local.
+# Em ambiente real elas vêm de um secret manager, nunca do repositório.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: stock
+      POSTGRES_PASSWORD: stock
+      POSTGRES_DB: stock
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock -d stock"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      target: release
+    environment:
+      STOCK_BACKEND: postgres
+      DATABASE_URL: postgresql://stock:stock@db:5432/stock
+      WEB_CONCURRENCY: "2"        # 2 processos: prova que a consistência vem do banco, não da memória
+      DB_POOL_MAX: "10"           # por processo -> até 20 conexões no total
+      DB_LOCK_TIMEOUT_MS: "2000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]            # não sobe com `docker compose up`
+    environment:
+      # Os testes criam um schema próprio por teste: não tocam nos dados da API.
+      DATABASE_URL: postgresql://stock:stock@db:5432/stock
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

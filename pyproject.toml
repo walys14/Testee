@@ -1,0 +1,13 @@
+[project]
+name = "stock-control"
+version = "1.0.0"
+description = "Controle de estoque com consistência forte sob alta concorrência"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: exige um PostgreSQL real (variável DATABASE_URL)",
+]
