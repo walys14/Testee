@@ -37,10 +37,11 @@ CMD ["uvicorn", "stock.api.app:create_app", "--factory", "--host", "0.0.0.0", "-
 # ---- testes -----------------------------------------------------------------
 FROM runtime AS test
 USER root
-COPY requirements-dev.txt .
+COPY requirements.txt requirements-dev.txt ./
 RUN pip install -r requirements-dev.txt
 COPY pyproject.toml .
 COPY tests ./tests
+RUN chown -R app:app /app
 USER app
 CMD ["pytest"]
 
